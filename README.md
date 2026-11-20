@@ -92,10 +92,11 @@ Story capture starts within 30 minutes. Post a story to see it land.
 
 ### 5. The app on your iPhone
 
-**From CI (no Mac needed):** Actions → *Build iOS app* → latest run → download
-`InstAnalytics-ipa`. Install it with [Sideloadly](https://sideloadly.io) or
-[AltStore](https://altstore.io) using your own Apple ID. A free Apple ID means re-signing every
-7 days; a paid developer account lasts a year.
+**From CI (no Mac needed):** every push to `main` publishes the newest build here —
+[**InstAnalytics-unsigned.ipa**](https://github.com/rvmendillo/instanalytics/releases/download/latest-build/InstAnalytics-unsigned.ipa)
+(the [latest-build release](https://github.com/rvmendillo/instanalytics/releases/tag/latest-build)).
+Install it with [Sideloadly](https://sideloadly.io) or [AltStore](https://altstore.io) using your
+own Apple ID. A free Apple ID means re-signing every 7 days; a paid developer account lasts a year.
 
 **From Xcode:**
 
