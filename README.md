@@ -22,23 +22,29 @@ frame lost people.
 | `.github/workflows/backend.yml` | Builds and tests the backend on every push. |
 | `.github/workflows/ios-build.yml` | Builds the iOS app into an `.ipa` on a macOS runner. |
 
-### Status
+### What it collects
 
-**Working now**
+| Collector | Runs | What |
+|---|---|---|
+| Stories | every 30 min | Every story metric plus the navigation breakdown, captured before Meta deletes it at 24h |
+| Account | daily, 04:23 | Views, reach, accounts engaged, interactions, likes, comments, saves, shares, replies, reposts; views by follower status and by surface; follows/unfollows; profile link taps; a follower-count snapshot |
+| Posts & reels | every 6 h | Every post, re-snapshotted while under 30 days old; reel watch time and skip rate |
+| Audience | daily, 04:41 | Age, gender, city, country — for followers, reached and engaged accounts |
+| Tokens | daily, 03:17 | Refreshes long before the 60-day expiry |
 
-- Story capture every 30 min — every metric Meta returns for stories, plus the navigation breakdown
-- Permanent story archive with derived exit rate, rewatch rate and cross-frame retention
-- Long-lived token handling: encrypted at rest (AES-GCM), refreshed on a schedule well before the 60-day cliff
-- Connect via OAuth, or by pasting a token from Meta's dashboard
-- iOS app: archive, per-frame funnel, views-over-time, retention-by-position, with demo mode
-- `IgMetricCatalog`: every media and account metric current as of November 2026, with tests
+Two things only this kind of setup can give you: **story numbers after 24 hours**, and **history** for
+anything Meta only reports as "right now" — follower count and audience composition.
 
-**Schema and API client ready, collectors next**
+Every job writes a row to `collector_run`, so a failing job shows up as a failure rather than as
+numbers that quietly stop moving.
 
-- Daily account insights (views, reach, accounts engaged, interactions, follows/unfollows)
-- Post and reel sync with insight snapshots over time
-- Follower demographics, snapshotted daily (Meta only gives the current state — history is something only you'll have)
-- Business Discovery watchlist for benchmarking public Business/Creator accounts
+**The iOS app** has five tabs — Account (growth, period-over-period, best times to post, audience),
+Stories (the archive and each frame's funnel), Posts (ranked by views, reach, engagement, shares or
+saves), Retention (how many viewers each story frame keeps), and Settings. Ships with demo data.
+
+**Not built yet:** the Facebook Login path. It's what unlocks Business Discovery (benchmarking
+public Business/Creator accounts — the client call exists and is tested), story link taps, and the
+`total_*` metrics that include boosted traffic.
 
 ## Setup
 
@@ -111,8 +117,27 @@ e.g. `http://192.168.1.23:8080`. Plain HTTP is allowed for local-network address
 | `GET /api/stories/{id}/timeline` | Every capture of one frame — how its numbers accumulated |
 | `GET /api/stories/summary?days=30` | Totals and averages for the window |
 | `GET /api/stories/retention-curve?days=90` | Average % of frame-1 viewers still watching at each position |
+| `GET /api/account/overview?days=30` | Headline metrics vs the previous period, profile, follower change |
+| `GET /api/account/series?metric=views&days=90` | One metric per day; `metric=followers` for follower history |
+| `GET /api/account/views-split?days=30` | Views by follower status and by surface |
+| `GET /api/media?type=REELS&sort=engagement` | Posts and reels with latest insights; sort by views, reach, engagement, shares, saved, recent |
+| `GET /api/media/best-times?days=180` | Average reach by weekday and by 4-hour block, settled posts only |
+| `GET /api/audience?breakdown=age` | Latest demographic snapshot; breakdown is age, gender, city or country |
+| `GET /api/collector-runs` | Recent job runs and their errors |
 | `GET /auth/instagram` | Start OAuth |
 | `POST /auth/token` | Import a dashboard-generated token |
+
+## Design notes worth knowing
+
+- **One bad metric fails a whole request** (error 100), and Meta retires metrics without much notice.
+  Multi-metric requests go through `GraphApiClient.tolerant()`, which splits the list in half on a
+  100 and recurses until the offending metric is isolated, so everything else still gets collected
+  and the dead metric gets logged.
+- **Reach and accounts engaged are averaged per day, never summed.** They count unique accounts;
+  adding 30 daily values counts a loyal follower 30 times.
+- **Story frames belong to a local day** (`ig.zone`, default Asia/Manila), stored as `story_day`.
+  Grouping by `date_trunc` in SQL would use UTC and split a 7am story across two days.
+- **Best times to post only uses posts a week or more old**, because newer posts are still gaining reach.
 
 ## Limits that come from Meta, not this code
 
