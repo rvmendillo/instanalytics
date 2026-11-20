@@ -1,0 +1,40 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: instanalytics
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/instanalytics}
+    username: ${DB_USER:instanalytics}
+    password: ${DB_PASSWORD:instanalytics}
+  flyway:
+    enabled: true
+  task:
+    scheduling:
+      pool:
+        size: 4
+
+# Everything secret comes from the environment. Nothing here should ever be a
+# real credential - see .env.example.
+ig:
+  app-id: ${IG_APP_ID}
+  app-secret: ${IG_APP_SECRET}
+  redirect-uri: ${IG_REDIRECT_URI:http://localhost:8080/auth/instagram/callback}
+  api-version: ${IG_API_VERSION:v26.0}
+  token-key: ${IG_TOKEN_KEY}
+  zone: ${IG_ZONE:Asia/Manila}
+  # Must stay well under 24h. Stories posted and expiring between two polls
+  # are lost permanently. 30m is a wide margin; don't push past a few hours.
+  story-poll-every: ${IG_STORY_POLL:PT30M}
+  refresh-token-days: 7
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+logging:
+  level:
+    com.rvmendillo.igstats: INFO

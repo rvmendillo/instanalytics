@@ -1,0 +1,23 @@
+# secrets
+.env
+*.p12
+*.mobileprovision
+
+# java
+backend/target/
+*.class
+.mvn/wrapper/maven-wrapper.jar
+
+# ios
+ios/*.xcodeproj/
+ios/build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+build/
+
+# editors
+.idea/
+.vscode/
+*.iml
+.DS_Store

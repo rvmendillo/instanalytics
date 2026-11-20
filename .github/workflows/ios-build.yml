@@ -1,0 +1,167 @@
+name: Build iOS app
+
+# Builds the SwiftUI client into an .ipa on a GitHub-hosted macOS runner.
+#
+# Two paths:
+#   unsigned (default) - no Apple account, no secrets, nothing to configure.
+#                        Produces an unsigned .ipa. You sign it on-device with
+#                        your own Apple ID using Sideloadly or AltStore.
+#   signed             - set the four secrets below and flip `sign` to true.
+#                        Produces an .ipa installable directly.
+#
+# Cost note: macOS runners are free on public repos. On a private repo they
+# bill at 10x the Linux rate, so a 5-minute build costs 50 minutes of quota.
+# Keep this repo public, or run it on a self-hosted Mac, or build locally.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ios/**'
+      - '.github/workflows/ios-build.yml'
+  workflow_dispatch:
+    inputs:
+      sign:
+        description: 'Sign the build (requires signing secrets)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SCHEME: InstAnalytics
+  PROJECT: ios/InstAnalytics.xcodeproj
+  CONFIG: Release
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
+          echo "Available SDKs:"; xcodebuild -showsdks | grep -i iphoneos
+
+      # The .xcodeproj is generated from ios/project.yml, not committed.
+      - name: Generate Xcode project
+        run: |
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          cd ios && xcodegen generate
+
+      # --- unsigned path -------------------------------------------------
+      # CODE_SIGNING_ALLOWED=NO lets xcodebuild archive without any identity.
+      # The archive still contains a complete .app bundle; an .ipa is just a
+      # zip with that bundle under Payload/, so we assemble it by hand.
+      - name: Archive (unsigned)
+        if: inputs.sign != true
+        run: |
+          set -euo pipefail
+          xcodebuild archive \
+            -quiet \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration "$CONFIG" \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/app.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Package unsigned .ipa
+        if: inputs.sign != true
+        run: |
+          set -euo pipefail
+          APP_PATH=$(find "$RUNNER_TEMP/app.xcarchive/Products/Applications" -maxdepth 1 -name '*.app' | head -1)
+          if [ -z "$APP_PATH" ]; then echo "::error::no .app in archive"; exit 1; fi
+          echo "Found: $APP_PATH"
+          STAGE="$RUNNER_TEMP/stage"
+          mkdir -p "$STAGE/Payload"
+          cp -R "$APP_PATH" "$STAGE/Payload/"
+          # Strip any stale signature so sideload tools re-sign cleanly.
+          rm -rf "$STAGE/Payload/"*.app/_CodeSignature
+          rm -f  "$STAGE/Payload/"*.app/embedded.mobileprovision
+          mkdir -p build
+          (cd "$STAGE" && zip -qry "$GITHUB_WORKSPACE/build/${SCHEME}-unsigned.ipa" Payload)
+          ls -lh build/
+
+      # --- signed path ---------------------------------------------------
+      - name: Install signing identity
+        if: inputs.sign == true
+        env:
+          CERT_P12:        ${{ secrets.IOS_CERT_P12 }}          # base64 of your .p12
+          CERT_PASSWORD:   ${{ secrets.IOS_CERT_PASSWORD }}
+          PROFILE:         ${{ secrets.IOS_PROVISIONING_PROFILE }}  # base64 of .mobileprovision
+          KEYCHAIN_PASS:   ${{ secrets.IOS_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$CERT_PASSWORD" -T /usr/bin/codesign -f pkcs12
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASS" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          echo "$PROFILE" | base64 --decode \
+            > ~/Library/MobileDevice/Provisioning\ Profiles/build.mobileprovision
+
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security find-identity -v -p codesigning "$KEYCHAIN"
+
+      - name: Archive and export (signed)
+        if: inputs.sign == true
+        env:
+          TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          xcodebuild archive \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration "$CONFIG" \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/app.xcarchive" \
+            DEVELOPMENT_TEAM="$TEAM_ID"
+
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>development</string>
+            <key>teamID</key><string>${TEAM_ID}</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>stripSwiftSymbols</key><true/>
+            <key>compileBitcode</key><false/>
+          </dict>
+          </plist>
+          PLIST
+
+          mkdir -p build
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/app.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath build
+          ls -lh build/
+
+      - name: Clean up keychain
+        if: always() && inputs.sign == true
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: InstAnalytics-ipa
+          path: build/*.ipa
+          retention-days: 30
+          if-no-files-found: error
