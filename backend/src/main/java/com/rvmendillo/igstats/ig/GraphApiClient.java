@@ -15,7 +15,10 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.ArrayList;
 import java.util.Optional;
+import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
@@ -62,6 +65,16 @@ public class GraphApiClient {
 
     private RestClient host(LoginType login) {
         return login == LoginType.FACEBOOK ? facebookHost : instagramHost;
+    }
+
+    /**
+     * The node to address for "this account". With Instagram Login the token
+     * identifies the user, so {@code me} is unambiguous - and sidesteps the two
+     * different ids that path hands out (app-scoped {@code id} vs professional
+     * {@code user_id}). Facebook Login has no such alias for the IG user.
+     */
+    static String node(LoginType login, String igUserId) {
+        return login == LoginType.INSTAGRAM ? "me" : igUserId;
     }
 
     // ------------------------------------------------------------------
@@ -117,7 +130,8 @@ public class GraphApiClient {
     // ------------------------------------------------------------------
 
     public JsonNode me(LoginType login, String igUserId, String token) {
-        return get(login, igUserId, Map.of("fields", IgMetricCatalog.ACCOUNT_FIELDS), token);
+        return get(login, node(login, igUserId),
+                Map.of("fields", IgMetricCatalog.accountFields(login)), token);
     }
 
     /**
@@ -129,7 +143,7 @@ public class GraphApiClient {
      */
     public JsonNode accountTimeSeries(LoginType login, String igUserId,
                                       Instant since, Instant until, String token) {
-        return get(login, igUserId + "/insights", Map.of(
+        return get(login, node(login, igUserId) + "/insights", Map.of(
                 "metric", IgMetricCatalog.accountTimeSeriesMetrics(),
                 "metric_type", "time_series",
                 "period", "day",
@@ -151,7 +165,7 @@ public class GraphApiClient {
         if (breakdown != null && !breakdown.isBlank()) {
             p.put("breakdown", breakdown);
         }
-        return get(login, igUserId + "/insights", p, token);
+        return get(login, node(login, igUserId) + "/insights", p, token);
     }
 
     /**
@@ -161,13 +175,16 @@ public class GraphApiClient {
      */
     public JsonNode demographics(LoginType login, String igUserId, String metric,
                                  String breakdown, String timeframe, String token) {
-        return get(login, igUserId + "/insights", Map.of(
+        Map<String, String> p = new LinkedHashMap<>(Map.of(
                 "metric", metric,
                 "period", "lifetime",
                 "metric_type", "total_value",
-                "breakdown", breakdown,
-                "timeframe", timeframe
-        ), token);
+                "breakdown", breakdown
+        ));
+        if (timeframe != null && !timeframe.isBlank()) {
+            p.put("timeframe", timeframe);
+        }
+        return get(login, node(login, igUserId) + "/insights", p, token);
     }
 
     // ------------------------------------------------------------------
@@ -182,7 +199,7 @@ public class GraphApiClient {
         if (after != null && !after.isBlank()) {
             p.put("after", after);
         }
-        return get(login, igUserId + "/media", p, token);
+        return get(login, node(login, igUserId) + "/media", p, token);
     }
 
     /**
@@ -192,8 +209,8 @@ public class GraphApiClient {
      * exists.
      */
     public JsonNode stories(LoginType login, String igUserId, String token) {
-        return get(login, igUserId + "/stories",
-                Map.of("fields", IgMetricCatalog.MEDIA_FIELDS), token);
+        return get(login, node(login, igUserId) + "/stories",
+                Map.of("fields", IgMetricCatalog.STORY_FIELDS), token);
     }
 
     public JsonNode mediaInsights(LoginType login, String mediaId, String metrics, String token) {
@@ -291,6 +308,47 @@ public class GraphApiClient {
             }
         }
         throw last;
+    }
+
+    // ------------------------------------------------------------------
+    // Tolerant multi-metric requests
+    // ------------------------------------------------------------------
+
+    /**
+     * Request several metrics at once, surviving a metric Meta stopped
+     * supporting.
+     *
+     * <p>One unsupported metric fails the whole request with code 100, and Meta
+     * retires metrics with little notice. So on a 100 the list is split in half
+     * and each half retried, recursively, until the offending metric is isolated
+     * and reported. Every other metric is still collected. Costs at most
+     * {@code 2n-1} calls in the worst case and exactly one when nothing is wrong.
+     *
+     * @param metrics       metrics to fetch
+     * @param call          performs one request for a comma-joined metric string
+     * @param onUnsupported told about each metric that failed on its own
+     */
+    public List<InsightRow> tolerant(List<String> metrics,
+                                     Function<String, JsonNode> call,
+                                     Consumer<String> onUnsupported) {
+        if (metrics.isEmpty()) {
+            return List.of();
+        }
+        try {
+            return parseInsights(call.apply(String.join(",", metrics)));
+        } catch (IgApiException e) {
+            if (!e.isUnsupportedMetric()) {
+                throw e;
+            }
+            if (metrics.size() == 1) {
+                onUnsupported.accept(metrics.get(0));
+                return List.of();
+            }
+            int mid = metrics.size() / 2;
+            List<InsightRow> out = new ArrayList<>(tolerant(metrics.subList(0, mid), call, onUnsupported));
+            out.addAll(tolerant(metrics.subList(mid, metrics.size()), call, onUnsupported));
+            return out;
+        }
     }
 
     // ------------------------------------------------------------------

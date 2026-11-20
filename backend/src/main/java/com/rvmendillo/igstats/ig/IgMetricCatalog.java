@@ -268,6 +268,28 @@ public final class IgMetricCatalog {
                 .collect(Collectors.joining(","));
     }
 
+    /**
+     * Account metrics that are safe to request together as one total_value call.
+     * The two excluded ones fail on small accounts (under 100 followers) or need
+     * their own breakdown, and one failing metric fails the whole request.
+     */
+    public static List<String> accountCoreMetrics() {
+        return List.of(accountTimeSeriesMetrics().split(","));
+    }
+
+    /**
+     * Metrics where a day's values must not be summed across days: each is a
+     * count of <i>unique</i> accounts, so 30 daily values added together counts
+     * a loyal follower 30 times. Aggregate these as a daily average instead.
+     */
+    public static final Set<String> UNIQUE_COUNT_METRICS = Set.of("reach", "accounts_engaged");
+
+    /** Media metrics for a product type as a list, for request splitting. */
+    public static List<String> mediaMetricList(ProductType type, LoginType login) {
+        String s = mediaMetrics(type, login);
+        return s.isEmpty() ? List.of() : List.of(s.split(","));
+    }
+
     /** Account metrics suitable for a {@code metric_type=time_series} request. */
     public static String accountTimeSeriesMetrics() {
         // follows_and_unfollows and profile_links_taps are total_value-only in
@@ -296,16 +318,39 @@ public final class IgMetricCatalog {
         return MEDIA_METRICS;
     }
 
-    /** Fields worth requesting on the media edge itself, separate from insights. */
+    /**
+     * Fields worth requesting on the media edge itself, separate from insights.
+     * Conservative on purpose: a field the node type doesn't have fails the
+     * whole call, so newer additions (alt_text) are left out.
+     */
     public static final String MEDIA_FIELDS = String.join(",",
             "id", "caption", "media_type", "media_product_type", "media_url",
             "permalink", "thumbnail_url", "timestamp", "like_count",
-            "comments_count", "is_shared_to_feed", "alt_text");
+            "comments_count", "is_shared_to_feed");
+
+    /**
+     * Minimal fields for the stories edge. Stories are the feature that can't
+     * be re-collected later, so this request carries nothing it doesn't need.
+     */
+    public static final String STORY_FIELDS = String.join(",",
+            "id", "media_type", "media_product_type", "media_url",
+            "permalink", "thumbnail_url", "timestamp");
 
     /** Fields on your own account. */
     public static final String ACCOUNT_FIELDS = String.join(",",
             "id", "username", "name", "account_type", "biography", "website",
             "profile_picture_url", "followers_count", "follows_count", "media_count");
+
+    /**
+     * Account fields per login path. {@code account_type} exists on the
+     * Instagram Login user node but not the Facebook Login one, where asking
+     * for it fails the request.
+     */
+    public static String accountFields(LoginType login) {
+        return login == LoginType.INSTAGRAM
+                ? ACCOUNT_FIELDS
+                : ACCOUNT_FIELDS.replace(",account_type", "");
+    }
 
     /**
      * Business Discovery field set - the only sanctioned way to read another

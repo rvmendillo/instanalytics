@@ -11,6 +11,8 @@ import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
 
 import java.net.URLDecoder;
+import java.util.ArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.ZoneId;
@@ -177,5 +179,73 @@ class GraphApiClientTest {
 
         client.exchangeFacebookToken("short");
         server.verify();
+    }
+
+    // ------------------------------------------------------------------
+    // Tolerant requests: survive a metric Meta retires.
+    // ------------------------------------------------------------------
+
+    /** Fake endpoint: rejects any request containing `bad`, else returns 1 per metric. */
+    private static JsonNode fakeInsights(String metrics, String bad) {
+        if (java.util.Arrays.asList(metrics.split(",")).contains(bad)) {
+            throw new IgApiException(100, null, "(#100) The metric " + bad + " is not supported", null);
+        }
+        StringBuilder sb = new StringBuilder("{\"data\":[");
+        String[] ms = metrics.split(",");
+        for (int i = 0; i < ms.length; i++) {
+            if (i > 0) sb.append(',');
+            sb.append("{\"name\":\"").append(ms[i]).append("\",\"values\":[{\"value\":1}]}");
+        }
+        try {
+            return JSON.readTree(sb.append("]}").toString());
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @Test
+    void tolerantIsolatesTheRejectedMetricAndKeepsTheRest() {
+        List<String> rejected = new ArrayList<>();
+        AtomicInteger calls = new AtomicInteger();
+
+        List<InsightRow> rows = parser.tolerant(List.of("a", "b", "c", "d", "e"), m -> {
+            calls.incrementAndGet();
+            return fakeInsights(m, "c");
+        }, rejected::add);
+
+        assertThat(rows).extracting(InsightRow::metric).containsExactlyInAnyOrder("a", "b", "d", "e");
+        assertThat(rejected).containsExactly("c");
+        assertThat(calls.get()).isLessThanOrEqualTo(2 * 5 - 1);
+    }
+
+    @Test
+    void tolerantCostsOneCallWhenNothingIsWrong() {
+        AtomicInteger calls = new AtomicInteger();
+        List<InsightRow> rows = parser.tolerant(List.of("a", "b", "c"), m -> {
+            calls.incrementAndGet();
+            return fakeInsights(m, "none");
+        }, x -> { });
+        assertThat(rows).hasSize(3);
+        assertThat(calls.get()).isEqualTo(1);
+    }
+
+    @Test
+    void tolerantDoesNotSwallowAuthFailures() {
+        assertThatThrownBy(() -> parser.tolerant(List.of("a", "b"),
+                m -> { throw new IgApiException(190, null, "(#190) expired", null); }, x -> { }))
+                .isInstanceOfSatisfying(IgApiException.class, e -> assertThat(e.isAuthFailure()).isTrue());
+    }
+
+    @Test
+    void instagramLoginAddressesMeNotTheStoredId() {
+        assertThat(GraphApiClient.node(IgMetricCatalog.LoginType.INSTAGRAM, "17841400000000000")).isEqualTo("me");
+        assertThat(GraphApiClient.node(IgMetricCatalog.LoginType.FACEBOOK, "17841400000000000"))
+                .isEqualTo("17841400000000000");
+    }
+
+    @Test
+    void facebookLoginNeverAsksForAccountType() {
+        assertThat(IgMetricCatalog.accountFields(IgMetricCatalog.LoginType.FACEBOOK)).doesNotContain("account_type");
+        assertThat(IgMetricCatalog.accountFields(IgMetricCatalog.LoginType.INSTAGRAM)).contains("account_type");
     }
 }
