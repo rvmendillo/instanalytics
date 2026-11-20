@@ -18,8 +18,14 @@ struct RootView: View {
 
     var body: some View {
         TabView {
+            NavigationStack { AccountView() }
+                .tabItem { Label("Account", systemImage: "person.crop.circle") }
+
             NavigationStack { StoriesView() }
                 .tabItem { Label("Stories", systemImage: "circle.dashed.inset.filled") }
+
+            NavigationStack { PostsView() }
+                .tabItem { Label("Posts", systemImage: "square.grid.2x2") }
 
             NavigationStack { RetentionView() }
                 .tabItem { Label("Retention", systemImage: "chart.line.downtrend.xyaxis") }

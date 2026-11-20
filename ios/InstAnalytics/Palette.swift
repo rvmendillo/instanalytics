@@ -12,6 +12,8 @@ enum Palette {
     static let deemphasis = dynamic(light: 0xC3C2B7, dark: 0x52514E)
     static let gridline = dynamic(light: 0xE1E0D9, dark: 0x2C2C2A)
     static let muted = Color(hex: 0x898781)
+    /// "Up and that's good" text. Always paired with an arrow, never color alone.
+    static let goodText = dynamic(light: 0x006300, dark: 0x0CA30C)
 
     private static func dynamic(light: UInt32, dark: UInt32) -> Color {
         Color(uiColor: UIColor { traits in

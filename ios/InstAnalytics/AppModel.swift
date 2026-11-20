@@ -11,6 +11,16 @@ final class AppModel {
 
     var accountId = 1
 
+    private(set) var overview: AccountOverview?
+    private(set) var followerSeries: [SeriesPoint] = []
+    private(set) var viewsSeries: [SeriesPoint] = []
+    private(set) var bestTimes: BestTimes?
+    private(set) var media: [MediaItem] = []
+
+    /// Posts list controls. Changing either reloads the list.
+    var mediaSort = "views"
+    var mediaType: String?
+
     private(set) var stories: [StoryFrame] = []
     private(set) var summary: StorySummary?
     private(set) var retention: [RetentionPoint] = []
@@ -50,11 +60,66 @@ final class AppModel {
         }
     }
 
+    /// Everything, in turn. Each loader keeps its old data if its own request
+    /// fails, so one broken endpoint doesn't blank the other tabs.
     func refresh() async {
         isLoading = true
         lastError = nil
         defer { isLoading = false }
+        await loadStories()
+        await loadAccount()
+        await loadMedia()
+    }
 
+    func loadAccount() async {
+        if useDemoData {
+            overview = DemoData.overview
+            followerSeries = DemoData.followerSeries
+            viewsSeries = DemoData.viewsSeries
+            bestTimes = DemoData.bestTimes
+            return
+        }
+        guard let api else { return }
+        let id = accountId
+        do {
+            async let o = api.overview(accountId: id, days: 30)
+            async let f = api.series(accountId: id, metric: "followers", days: 90)
+            async let v = api.series(accountId: id, metric: "views", days: 30)
+            async let b = api.bestTimes(accountId: id, days: 180)
+            let (loadedOverview, loadedFollowers, loadedViews, loadedBest) = try await (o, f, v, b)
+            overview = loadedOverview
+            followerSeries = loadedFollowers
+            viewsSeries = loadedViews
+            bestTimes = loadedBest
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func loadMedia() async {
+        if useDemoData {
+            media = DemoData.media(type: mediaType, sort: mediaSort)
+            return
+        }
+        guard let api else { return }
+        let id = accountId
+        let type = mediaType
+        let sort = mediaSort
+        do {
+            media = try await api.media(accountId: id, type: type, sort: sort)
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func audience(breakdown: String) async -> Audience? {
+        if useDemoData { return DemoData.audience(breakdown) }
+        guard let api else { return nil }
+        let id = accountId
+        return try? await api.audience(accountId: id, metric: "follower_demographics", breakdown: breakdown)
+    }
+
+    private func loadStories() async {
         if useDemoData {
             stories = DemoData.stories
             summary = DemoData.summary

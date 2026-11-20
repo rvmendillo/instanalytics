@@ -42,6 +42,46 @@ struct APIClient: Sendable {
         try await get("api/stories/\(frameId)/timeline", [])
     }
 
+    func overview(accountId: Int, days: Int) async throws -> AccountOverview {
+        try await get("api/account/overview", [
+            URLQueryItem(name: "accountId", value: String(accountId)),
+            URLQueryItem(name: "days", value: String(days)),
+        ])
+    }
+
+    func series(accountId: Int, metric: String, days: Int) async throws -> [SeriesPoint] {
+        try await get("api/account/series", [
+            URLQueryItem(name: "accountId", value: String(accountId)),
+            URLQueryItem(name: "metric", value: metric),
+            URLQueryItem(name: "days", value: String(days)),
+        ])
+    }
+
+    func media(accountId: Int, type: String?, sort: String, limit: Int = 60) async throws -> [MediaItem] {
+        var q = [
+            URLQueryItem(name: "accountId", value: String(accountId)),
+            URLQueryItem(name: "sort", value: sort),
+            URLQueryItem(name: "limit", value: String(limit)),
+        ]
+        if let type { q.append(URLQueryItem(name: "type", value: type)) }
+        return try await get("api/media", q)
+    }
+
+    func bestTimes(accountId: Int, days: Int) async throws -> BestTimes {
+        try await get("api/media/best-times", [
+            URLQueryItem(name: "accountId", value: String(accountId)),
+            URLQueryItem(name: "days", value: String(days)),
+        ])
+    }
+
+    func audience(accountId: Int, metric: String, breakdown: String) async throws -> Audience {
+        try await get("api/audience", [
+            URLQueryItem(name: "accountId", value: String(accountId)),
+            URLQueryItem(name: "metric", value: metric),
+            URLQueryItem(name: "breakdown", value: breakdown),
+        ])
+    }
+
     func health() async throws -> Bool {
         var req = URLRequest(url: baseURL.appendingPathComponent("actuator/health"))
         req.timeoutInterval = 5
@@ -93,6 +133,12 @@ struct APIClient: Sendable {
         if let d = frac.date(from: s) { return d }
         let plain = ISO8601DateFormatter()
         plain.formatOptions = [.withInternetDateTime]
-        return plain.date(from: s)
+        if let d = plain.date(from: s) { return d }
+        // SQL date columns arrive as a bare "yyyy-MM-dd". Anchor them at local
+        // midnight so a day never slides into the previous one on display.
+        let day = ISO8601DateFormatter()
+        day.formatOptions = [.withFullDate]
+        day.timeZone = .current
+        return day.date(from: s)
     }
 }
