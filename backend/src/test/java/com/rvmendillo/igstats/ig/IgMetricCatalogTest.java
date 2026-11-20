@@ -32,6 +32,32 @@ class IgMetricCatalogTest {
     }
 
     @Test
+    void viewsIsAlwaysRequested() {
+        // Regression: account-level breakdowns attach to `views`, and treating
+        // them as media breakdowns stripped `views` from every media request.
+        for (ProductType type : ProductType.values()) {
+            for (LoginType login : LoginType.values()) {
+                assertThat(metrics(type, login)).as("%s via %s", type, login).contains("views", "reach");
+            }
+        }
+    }
+
+    @Test
+    void crosspostMetricsNeverRideAlong() {
+        // facebook_views / crossposted_views throw when the media wasn't shared
+        // to Facebook - included by default they'd fail the whole request.
+        for (ProductType type : ProductType.values()) {
+            for (LoginType login : LoginType.values()) {
+                assertThat(metrics(type, login)).as("%s via %s", type, login)
+                        .doesNotContain("facebook_views", "crossposted_views");
+            }
+        }
+        assertThat(IgMetricCatalog.crosspostMetrics(ProductType.REELS).split(","))
+                .containsExactlyInAnyOrder("crossposted_views", "facebook_views");
+        assertThat(IgMetricCatalog.crosspostMetrics(ProductType.STORY)).isEqualTo("facebook_views");
+    }
+
+    @Test
     void storiesOnlyGetStoryMetrics() {
         assertThat(metrics(ProductType.STORY, LoginType.INSTAGRAM))
                 .contains("views", "reach", "replies", "shares", "follows", "profile_visits")

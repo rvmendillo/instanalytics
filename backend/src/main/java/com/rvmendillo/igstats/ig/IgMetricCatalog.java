@@ -30,6 +30,9 @@ import java.util.stream.Collectors;
  *       number when fewer than 5 people saw the story.</li>
  *   <li>{@code replies} on stories always returns 0 for accounts in Europe and
  *       Japan. Not a bug, a regional restriction.</li>
+ *   <li>{@code facebook_views} and {@code crossposted_views} throw when the media
+ *       wasn't shared to Facebook, taking the whole request down with them.
+ *       They live in their own list and are never requested by default.</li>
  * </ul>
  */
 public final class IgMetricCatalog {
@@ -84,10 +87,19 @@ public final class IgMetricCatalog {
             Metric.of("ig_reels_video_view_total_time","Total play time including replays, milliseconds.",
                     EnumSet.of(ProductType.REELS)),
             Metric.of("reels_skip_rate",  "Skip rate. Estimated, still in development - expect gaps.",
+                    EnumSet.of(ProductType.REELS))
+    );
+
+    /**
+     * Metrics that <b>throw</b> when the media was not shared to Facebook. One of
+     * these in a normal request fails the whole request, so they are never part
+     * of {@link #mediaMetrics}; request them on their own and treat failure as
+     * "not crossposted".
+     */
+    private static final List<Metric> CROSSPOST_METRICS = List.of(
+            Metric.of("crossposted_views", "Views across Instagram and Facebook combined.",
                     EnumSet.of(ProductType.REELS)),
-            Metric.of("crossposted_views","Views across Instagram and Facebook combined. Throws if not crossposted.",
-                    EnumSet.of(ProductType.REELS)),
-            Metric.of("facebook_views",   "Facebook plays only. Throws if not shared to Facebook.",
+            Metric.of("facebook_views", "Facebook plays only.",
                     EnumSet.allOf(ProductType.class))
     );
 
@@ -167,11 +179,20 @@ public final class IgMetricCatalog {
      * values are as observed - the account insights reference doesn't enumerate
      * them - so they are used descriptively only, never to validate a response.
      */
-    public static final List<Breakdown> BREAKDOWNS = List.of(
+    public static final List<Breakdown> MEDIA_BREAKDOWNS = List.of(
             new Breakdown("story_navigation_action_type", "navigation",
                     List.of("TAP_FORWARD", "TAP_BACK", "SWIPE_FORWARD", "TAP_EXIT")),
             new Breakdown("action_type", "profile_activity",
-                    List.of("BIO_LINK_CLICKED", "CALL", "DIRECTION", "EMAIL", "TEXT", "OTHER")),
+                    List.of("BIO_LINK_CLICKED", "CALL", "DIRECTION", "EMAIL", "TEXT", "OTHER"))
+    );
+
+    /**
+     * Account-level only. Kept apart from {@link #MEDIA_BREAKDOWNS} on purpose:
+     * two of these attach to {@code views}, and mixing the lists once caused
+     * {@code views} to be stripped from every media request as if it were a
+     * breakdown-only metric.
+     */
+    public static final List<Breakdown> ACCOUNT_BREAKDOWNS = List.of(
             new Breakdown("follow_type", "views",
                     List.of("FOLLOWER", "NON_FOLLOWER")),
             new Breakdown("media_product_type", "views",
@@ -179,6 +200,9 @@ public final class IgMetricCatalog {
             new Breakdown("contact_button_type", "profile_links_taps",
                     List.of("BIO_LINK_CLICKED", "CALL", "DIRECTION", "EMAIL", "INSTANT_EXPERIENCE", "OTHER", "TEXT"))
     );
+
+    public static final List<Breakdown> BREAKDOWNS = java.util.stream.Stream.concat(
+            MEDIA_BREAKDOWNS.stream(), ACCOUNT_BREAKDOWNS.stream()).toList();
 
     /**
      * Story navigation, decoded. The names are unintuitive enough to be worth
@@ -205,7 +229,7 @@ public final class IgMetricCatalog {
      * those separately via {@link #breakdownRequests(ProductType)}.
      */
     public static String mediaMetrics(ProductType type, LoginType login) {
-        Set<String> breakdownOwned = BREAKDOWNS.stream()
+        Set<String> breakdownOwned = MEDIA_BREAKDOWNS.stream()
                 .map(Breakdown::metric)
                 .collect(Collectors.toSet());
 
@@ -228,10 +252,20 @@ public final class IgMetricCatalog {
                 .map(Metric::name)
                 .collect(Collectors.toSet());
 
-        return BREAKDOWNS.stream()
+        return MEDIA_BREAKDOWNS.stream()
                 .filter(b -> supported.contains(b.metric()))
-                .filter(b -> !b.name().equals("follow_type") && !b.name().equals("media_product_type"))
                 .toList();
+    }
+
+    /**
+     * Crosspost metrics for this product type, as a metric string. Request on
+     * its own; an error means the media simply wasn't shared to Facebook.
+     */
+    public static String crosspostMetrics(ProductType type) {
+        return CROSSPOST_METRICS.stream()
+                .filter(m -> m.appliesTo(type))
+                .map(Metric::name)
+                .collect(Collectors.joining(","));
     }
 
     /** Account metrics suitable for a {@code metric_type=time_series} request. */
@@ -290,6 +324,7 @@ public final class IgMetricCatalog {
     public static List<Metric> describeAll(LoginType login) {
         return java.util.stream.Stream.of(
                         allMediaMetrics(login).stream(),
+                        CROSSPOST_METRICS.stream(),
                         ACCOUNT_METRICS.stream(),
                         DEMOGRAPHIC_METRICS.stream())
                 .flatMap(s -> s)

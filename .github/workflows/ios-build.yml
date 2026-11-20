@@ -159,6 +159,36 @@ jobs:
         if: always() && inputs.sign == true
         run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
 
+      # Don't trust the upload just because a file exists: open the .ipa and
+      # check it's an installable bundle - executable present, arm64, the
+      # Info.plist keys sideload tools read, and compiled assets for the icon.
+      - name: Verify .ipa
+        run: |
+          set -euo pipefail
+          IPA=$(ls build/*.ipa | head -1)
+          echo "== $IPA ($(du -h "$IPA" | cut -f1))"
+          CHECK="$RUNNER_TEMP/verify"; rm -rf "$CHECK"; mkdir -p "$CHECK"
+          unzip -q "$IPA" -d "$CHECK"
+
+          APP=$(find "$CHECK/Payload" -maxdepth 1 -name '*.app' | head -1)
+          [ -n "$APP" ] || { echo "::error::no .app under Payload/"; exit 1; }
+
+          PB=/usr/libexec/PlistBuddy
+          EXE=$($PB -c 'Print :CFBundleExecutable' "$APP/Info.plist")
+          [ -f "$APP/$EXE" ] || { echo "::error::executable '$EXE' missing"; exit 1; }
+          echo "== Executable: $EXE"
+          lipo -info "$APP/$EXE"
+          lipo -archs "$APP/$EXE" | grep -qw arm64 || { echo "::error::no arm64 slice"; exit 1; }
+
+          echo "== Info.plist"
+          for k in CFBundleIdentifier CFBundleDisplayName CFBundleShortVersionString CFBundleVersion MinimumOSVersion; do
+            printf '   %-28s %s\n' "$k" "$($PB -c "Print :$k" "$APP/Info.plist" 2>/dev/null || echo MISSING)"
+          done
+
+          [ -f "$APP/Assets.car" ] || { echo "::error::Assets.car missing - no app icon"; exit 1; }
+          echo "== Assets.car present ($(du -h "$APP/Assets.car" | cut -f1))"
+          echo "== OK: installable bundle"
+
       - uses: actions/upload-artifact@v4
         with:
           name: InstAnalytics-ipa
